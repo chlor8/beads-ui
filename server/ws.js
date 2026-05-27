@@ -25,6 +25,14 @@ let REFRESH_TIMER = null;
 let REFRESH_DEBOUNCE_MS = 75;
 
 /**
+ * Guard so overlapping refresh passes (watcher + poll + mutation) coalesce
+ * instead of piling up serialized bd spawns. While a pass runs, further
+ * requests set a pending flag; one trailing pass runs after the current one.
+ */
+let REFRESH_RUNNING = false;
+let REFRESH_PENDING = false;
+
+/**
  * Mutation refresh window gate. When active, watcher-driven list refresh
  * scheduling is suppressed. The gate resolves either when a watcher event
  * arrives (via scheduleListRefresh) or when a timeout elapses, at which
@@ -137,17 +145,31 @@ function collectActiveListSpecs() {
  * Run refresh for all active list subscription specs and publish deltas.
  */
 async function refreshAllActiveListSubscriptions() {
-  const specs = collectActiveListSpecs();
-  // Run refreshes concurrently; locking is handled per key in the registry
-  await Promise.all(
-    specs.map(async (spec) => {
-      try {
-        await refreshAndPublish(spec);
-      } catch {
-        // ignore refresh errors per spec
-      }
-    })
-  );
+  // Coalesce overlapping passes: if one is already running, mark pending and
+  // let the in-flight pass run one more time after it finishes.
+  if (REFRESH_RUNNING) {
+    REFRESH_PENDING = true;
+    return;
+  }
+  REFRESH_RUNNING = true;
+  try {
+    do {
+      REFRESH_PENDING = false;
+      const specs = collectActiveListSpecs();
+      // Run refreshes concurrently; locking is handled per key in the registry
+      await Promise.all(
+        specs.map(async (spec) => {
+          try {
+            await refreshAndPublish(spec);
+          } catch {
+            // ignore refresh errors per spec
+          }
+        })
+      );
+    } while (REFRESH_PENDING);
+  } finally {
+    REFRESH_RUNNING = false;
+  }
 }
 
 /**
