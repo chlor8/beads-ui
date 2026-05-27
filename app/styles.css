@@ -2128,10 +2128,57 @@ html[data-theme='dark'] {
 .cmp-header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .cmp-header input[type='search'] {
-  flex: 1 1 auto;
+  flex: 1 1 160px;
+}
+.cmp-chips {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.cmp-chip,
+.cmp-tree-toggle {
+  padding: 2px 8px;
+  font-size: 12px;
+  border: 1px solid var(--control-border, var(--border));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.cmp-chip:hover,
+.cmp-tree-toggle:hover {
+  color: var(--fg);
+}
+.cmp-chip.is-active,
+.cmp-tree-toggle.is-active {
+  background: color-mix(in srgb, var(--link, #2563eb) 14%, transparent);
+  border-color: var(--link, #2563eb);
+  color: var(--fg);
+}
+.cmp-tree-toggle {
+  flex: 0 0 auto;
+}
+.cmp-subbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.cmp-clear {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.cmp-clear:hover {
+  color: var(--fg);
 }
 .cmp-count {
   flex: 0 0 auto;
@@ -2170,6 +2217,16 @@ html[data-theme='dark'] {
   color: var(--muted);
   text-decoration: line-through;
 }
+.cmp-caret {
+  flex: 0 0 auto;
+  width: 1em;
+  text-align: center;
+  color: var(--muted);
+  cursor: pointer;
+}
+.cmp-caret--leaf {
+  cursor: default;
+}
 .cmp-glyph {
   flex: 0 0 auto;
   width: 1em;
@@ -2198,6 +2255,32 @@ html[data-theme='dark'] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.cmp-label {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--badge-fg-neutral, var(--muted));
+  background: var(
+    --badge-bg-neutral,
+    color-mix(in srgb, var(--panel-bg) 80%, #888)
+  );
+  border-radius: var(--badge-radius, 999px);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.cmp-label.is-active {
+  cursor: default;
+}
+.cmp-dep {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.cmp-dep--out {
+  opacity: 0.75;
 }
 .cmp-type {
   flex: 0 0 auto;

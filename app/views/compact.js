@@ -1,5 +1,6 @@
 import { html, render } from 'lit-html';
 import { createListSelectors } from '../data/list-selectors.js';
+import { cmpClosedDesc, cmpPriorityThenCreated } from '../data/sort.js';
 import { typeLabel } from '../utils/issue-type.js';
 import { debug } from '../utils/logging.js';
 import { emojiForPriority } from '../utils/priority-badge.js';
@@ -7,8 +8,22 @@ import { priority_levels } from '../utils/priority.js';
 import { statusLabel } from '../utils/status.js';
 
 /**
- * @typedef {{ id: string, title?: string, status?: 'open'|'in_progress'|'closed', priority?: number, issue_type?: string, assignee?: string }} Issue
+ * @typedef {{ id: string, title?: string, status?: 'open'|'in_progress'|'closed', priority?: number, issue_type?: string, assignee?: string, labels?: string[], dependency_count?: number, dependent_count?: number, closed_at?: number }} Issue
  */
+
+/**
+ * @typedef {{ issue: Issue, depth: number, hasChildren: boolean }} Entry
+ */
+
+const STATUS_CHIPS = [
+  ['all', 'All'],
+  ['open', 'Open'],
+  ['in_progress', 'In progress'],
+  ['closed', 'Closed'],
+  ['ready', 'Ready']
+];
+
+const TREE_KEY = 'beads-ui.compact.tree';
 
 /**
  * Status glyphs mirror the `bd` CLI legend (○ open, ◐ in_progress, ✓ closed)
@@ -26,6 +41,18 @@ function statusGlyph(status) {
     default:
       return '○';
   }
+}
+
+/**
+ * Parent id by trimming the last dotted segment (bd encodes hierarchy in ids,
+ * e.g. `epic.2.1` → parent `epic.2`). Returns null for flat/top-level ids.
+ *
+ * @param {string} id
+ * @returns {string | null}
+ */
+function dotParent(id) {
+  const i = id.lastIndexOf('.');
+  return i > 0 ? id.slice(0, i) : null;
 }
 
 /**
@@ -52,26 +79,114 @@ export function createCompactView(
   let issues_cache = [];
   /** @type {string} */
   let search_text = store ? store.getState().filters?.search || '' : '';
+  /** @type {string} */
+  let status_filter = store ? store.getState().filters?.status || 'all' : 'all';
+  /** @type {string | null} */
+  let label_filter = null;
   /** @type {string | null} */
   let selected_id = store ? store.getState().selected_id : null;
+  /** @type {boolean} */
+  let tree_mode = readTreePref();
+  /** @type {Set<string>} */
+  const collapsed = new Set();
   /** @type {null | (() => void)} */
   let unsubscribe = null;
 
+  /** @returns {boolean} */
+  function readTreePref() {
+    try {
+      return window.localStorage.getItem(TREE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  }
+
   /**
-   * Apply the client-side search filter to the cached issues.
+   * Apply status / label / search filters to the cached issues.
    *
    * @returns {Issue[]}
    */
-  function filtered() {
-    if (!search_text) {
-      return issues_cache;
+  function computeFiltered() {
+    let rows = issues_cache;
+    // Concrete-status narrowing (the subscription also narrows when a store is
+    // wired; this keeps the client honest for the all-issues snapshot too).
+    if (
+      status_filter === 'open' ||
+      status_filter === 'in_progress' ||
+      status_filter === 'closed'
+    ) {
+      rows = rows.filter((it) => String(it.status || '') === status_filter);
     }
-    const needle = search_text.toLowerCase();
-    return issues_cache.filter((it) => {
-      const a = String(it.id).toLowerCase();
-      const b = String(it.title || '').toLowerCase();
-      return a.includes(needle) || b.includes(needle);
-    });
+    if (label_filter) {
+      const lf = label_filter;
+      rows = rows.filter((it) =>
+        Array.isArray(it.labels) ? it.labels.includes(lf) : false
+      );
+    }
+    if (search_text) {
+      const needle = search_text.toLowerCase();
+      rows = rows.filter((it) => {
+        const a = String(it.id).toLowerCase();
+        const b = String(it.title || '').toLowerCase();
+        return a.includes(needle) || b.includes(needle);
+      });
+    }
+    if (status_filter === 'closed' && !tree_mode) {
+      rows = rows.slice().sort(cmpClosedDesc);
+    }
+    return rows;
+  }
+
+  /**
+   * Ordered, depth-tagged entries honoring tree mode + collapse state.
+   *
+   * @returns {Entry[]}
+   */
+  function computeEntries() {
+    const rows = computeFiltered();
+    if (!tree_mode) {
+      return rows.map((issue) => ({ issue, depth: 0, hasChildren: false }));
+    }
+    const byId = new Map(rows.map((it) => [String(it.id), it]));
+    /** @param {string} id */
+    const presentParent = (id) => {
+      let p = dotParent(id);
+      while (p) {
+        if (byId.has(p)) return p;
+        p = dotParent(p);
+      }
+      return null;
+    };
+    /** @type {Map<string, Issue[]>} */
+    const childrenOf = new Map();
+    /** @type {Issue[]} */
+    const roots = [];
+    for (const it of rows) {
+      const pid = presentParent(String(it.id));
+      if (pid) {
+        if (!childrenOf.has(pid)) childrenOf.set(pid, []);
+        /** @type {Issue[]} */ (childrenOf.get(pid)).push(it);
+      } else {
+        roots.push(it);
+      }
+    }
+    /** @param {Issue[]} arr */
+    const sortSib = (arr) => arr.slice().sort(cmpPriorityThenCreated);
+    /** @type {Entry[]} */
+    const out = [];
+    /**
+     * @param {Issue} it
+     * @param {number} depth
+     */
+    const walk = (it, depth) => {
+      const kids = childrenOf.get(String(it.id)) || [];
+      out.push({ issue: it, depth, hasChildren: kids.length > 0 });
+      if (kids.length > 0 && !collapsed.has(String(it.id))) {
+        for (const k of sortSib(kids)) walk(k, depth + 1);
+      }
+    };
+    for (const r of sortSib(roots)) walk(r, 0);
+    return out;
   }
 
   /**
@@ -87,6 +202,49 @@ export function createCompactView(
   };
 
   /**
+   * @param {string} status
+   */
+  function setStatus(status) {
+    status_filter = status;
+    // Driving the shared filter re-points the tab:issues subscription via the
+    // existing machinery in main.js (ready→ready-issues, closed→closed, …).
+    if (store) {
+      store.setState({ filters: { status } });
+    }
+    doRender();
+  }
+
+  /**
+   * @param {string | null} label
+   */
+  function setLabel(label) {
+    label_filter = label;
+    doRender();
+  }
+
+  function toggleTree() {
+    tree_mode = !tree_mode;
+    try {
+      window.localStorage.setItem(TREE_KEY, tree_mode ? '1' : '0');
+    } catch {
+      // ignore
+    }
+    doRender();
+  }
+
+  /**
+   * @param {string} id
+   */
+  function toggleCollapse(id) {
+    if (collapsed.has(id)) {
+      collapsed.delete(id);
+    } else {
+      collapsed.add(id);
+    }
+    doRender();
+  }
+
+  /**
    * @param {string} id
    */
   function open(id) {
@@ -95,25 +253,46 @@ export function createCompactView(
   }
 
   /**
-   * @param {Issue} it
+   * @param {Entry} entry
    */
-  function row(it) {
+  function row(entry) {
+    const it = entry.issue;
     const id = String(it.id);
     const is_selected = id === selected_id;
     const prio = typeof it.priority === 'number' ? it.priority : 2;
     const prio_label = priority_levels[Math.max(0, Math.min(4, prio))] || '';
     const closed = String(it.status || '') === 'closed';
+    const indent = 12 + entry.depth * 16;
+    const dep_count = Number(it.dependency_count) || 0;
+    const dependent_count = Number(it.dependent_count) || 0;
+    const labels = Array.isArray(it.labels) ? it.labels : [];
+    const can_collapse = tree_mode && entry.hasChildren;
     return html`
       <button
         type="button"
         class="cmp-row${is_selected ? ' is-selected' : ''}${closed
           ? ' is-closed'
           : ''}"
+        style=${`padding-left:${indent}px`}
         data-id=${id}
         role="row"
         aria-selected=${is_selected ? 'true' : 'false'}
         @click=${() => open(id)}
       >
+        ${can_collapse
+          ? html`<span
+              class="cmp-caret"
+              role="button"
+              title=${collapsed.has(id) ? 'Expand' : 'Collapse'}
+              @click=${(/** @type {Event} */ e) => {
+                e.stopPropagation();
+                toggleCollapse(id);
+              }}
+              >${collapsed.has(id) ? '▸' : '▾'}</span
+            >`
+          : tree_mode
+            ? html`<span class="cmp-caret cmp-caret--leaf"></span>`
+            : ''}
         <span
           class="cmp-glyph cmp-glyph--${String(it.status || 'open')}"
           title=${statusLabel(it.status)}
@@ -124,6 +303,30 @@ export function createCompactView(
         >
         <span class="cmp-id mono">${id}</span>
         <span class="cmp-title">${it.title || '(untitled)'}</span>
+        ${labels.map(
+          (l) =>
+            html`<span
+              class="cmp-label"
+              title=${'Filter by ' + l}
+              @click=${(/** @type {Event} */ e) => {
+                e.stopPropagation();
+                setLabel(l);
+              }}
+              >${l}</span
+            >`
+        )}
+        ${dep_count > 0
+          ? html`<span class="cmp-dep" title=${`Depends on ${dep_count}`}
+              >↑${dep_count}</span
+            >`
+          : ''}
+        ${dependent_count > 0
+          ? html`<span
+              class="cmp-dep cmp-dep--out"
+              title=${`${dependent_count} depend on this`}
+              >↓${dependent_count}</span
+            >`
+          : ''}
         <span class="cmp-type">${typeLabel(it.issue_type) || ''}</span>
         <span class="cmp-assignee">${it.assignee || ''}</span>
       </button>
@@ -131,23 +334,57 @@ export function createCompactView(
   }
 
   function template() {
-    const rows = filtered();
+    const entries = computeEntries();
     return html`
       <div class="panel__header cmp-header">
+        <div class="cmp-chips" role="tablist">
+          ${STATUS_CHIPS.map(
+            ([value, label]) =>
+              html`<button
+                type="button"
+                class="cmp-chip${status_filter === value ? ' is-active' : ''}"
+                aria-pressed=${status_filter === value ? 'true' : 'false'}
+                @click=${() => setStatus(value)}
+              >
+                ${label}
+              </button>`
+          )}
+        </div>
         <input
           type="search"
           placeholder="Filter…"
           @input=${onSearchInput}
           .value=${search_text}
         />
+        <button
+          type="button"
+          class="cmp-tree-toggle${tree_mode ? ' is-active' : ''}"
+          title="Group by epic (tree)"
+          aria-pressed=${tree_mode ? 'true' : 'false'}
+          @click=${toggleTree}
+        >
+          Tree
+        </button>
         <span class="cmp-count muted"
-          >${rows.length} issue${rows.length === 1 ? '' : 's'}</span
+          >${entries.length} row${entries.length === 1 ? '' : 's'}</span
         >
       </div>
+      ${label_filter
+        ? html`<div class="cmp-subbar">
+            <span class="cmp-label is-active">${label_filter}</span>
+            <button
+              type="button"
+              class="cmp-clear"
+              @click=${() => setLabel(null)}
+            >
+              ✕ clear
+            </button>
+          </div>`
+        : ''}
       <div class="panel__body cmp-body" id="compact-root" role="grid">
-        ${rows.length === 0
+        ${entries.length === 0
           ? html`<div class="muted" style="padding:10px 12px;">No issues</div>`
-          : rows.map((it) => row(it))}
+          : entries.map((e) => row(e))}
       </div>
     `;
   }
@@ -157,22 +394,22 @@ export function createCompactView(
   }
 
   /**
-   * Move keyboard selection by a delta within the current filtered rows and
-   * focus the row button (visual highlight follows focus + selected_id).
+   * Move keyboard selection by a delta within the currently visible entries
+   * and focus the row button (highlight follows focus + selected_id).
    *
    * @param {number} delta
    */
   function moveSelection(delta) {
-    const rows = filtered();
-    if (rows.length === 0) {
+    const entries = computeEntries();
+    if (entries.length === 0) {
       return;
     }
-    let idx = rows.findIndex((it) => String(it.id) === selected_id);
+    let idx = entries.findIndex((e) => String(e.issue.id) === selected_id);
     if (idx < 0) {
-      idx = delta > 0 ? -1 : rows.length;
+      idx = delta > 0 ? -1 : entries.length;
     }
-    const next = Math.max(0, Math.min(rows.length - 1, idx + delta));
-    selected_id = String(rows[next].id);
+    const next = Math.max(0, Math.min(entries.length - 1, idx + delta));
+    selected_id = String(entries[next].issue.id);
     doRender();
     // Focus by row index — avoids selector-escaping issue ids (dots/colons).
     const el = /** @type {HTMLElement|null} */ (
@@ -216,8 +453,10 @@ export function createCompactView(
   async function load() {
     log('load');
     if (store) {
-      selected_id = store.getState().selected_id;
-      search_text = store.getState().filters?.search || search_text;
+      const s = store.getState();
+      selected_id = s.selected_id;
+      search_text = s.filters?.search || search_text;
+      status_filter = s.filters?.status || status_filter;
     }
     try {
       issues_cache = selectors
