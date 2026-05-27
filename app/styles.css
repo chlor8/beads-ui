@@ -2336,3 +2336,34 @@ html[data-theme='dark'] {
   color: var(--muted);
   font-size: 12px;
 }
+
+/* --- Header refresh control ----------------------------------------------- */
+.refresh-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.refresh-btn {
+  font-size: 15px;
+  line-height: 1;
+  padding: 3px 8px;
+  border: 1px solid var(--button-border, var(--border));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+.refresh-btn:hover {
+  border-color: color-mix(in srgb, var(--link, #2563eb) 50%, var(--border));
+}
+.refresh-btn.is-spinning {
+  animation: header-spin 600ms linear;
+}
+.refresh-interval {
+  font-size: 12px;
+  padding: 3px 4px;
+  border: 1px solid var(--control-border, var(--border));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+}

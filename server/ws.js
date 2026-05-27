@@ -8,7 +8,7 @@ import { WebSocketServer } from 'ws';
 import { isRequest, makeError, makeOk } from '../app/protocol.js';
 import { getGitUserName, runBd, runBdJson } from './bd.js';
 import { resolveWorkspaceDatabase } from './db.js';
-import { fetchListForSubscription } from './list-adapters.js';
+import { clearListCache, fetchListForSubscription } from './list-adapters.js';
 import { debug } from './logging.js';
 import { getAvailableWorkspaces } from './registry-watcher.js';
 import { keyOf, registry } from './subscriptions.js';
@@ -337,8 +337,11 @@ function emitSubscriptionDelete(ws, client_id, key, issue_id) {
 async function refreshAndPublish(spec) {
   const key = keyOf(spec);
   await registry.withKeyLock(key, async () => {
+    // Live refresh must reflect the change that triggered it — bypass the
+    // cache read (but still repopulate it for cheap re-subscribes).
     const res = await fetchListForSubscription(spec, {
-      cwd: CURRENT_WORKSPACE?.root_dir
+      cwd: CURRENT_WORKSPACE?.root_dir,
+      force: true
     });
     if (!res.ok) {
       log('refresh failed for %s: %s %o', key, res.error.message, res.error);
@@ -541,6 +544,8 @@ export function attachWsServer(http_server, options = {}) {
 
       // Clear existing registry entries and refresh all subscriptions
       registry.clear();
+      // Drop cached list results so the new workspace can't serve stale data
+      clearListCache();
 
       // Broadcast workspace-changed event to all clients
       broadcast('workspace-changed', CURRENT_WORKSPACE);
@@ -600,6 +605,14 @@ export async function handleMessage(ws, data) {
   // Dispatch known types here as we implement them. For now, only a ping utility.
   if (req.type === /** @type {MessageType} */ ('ping')) {
     ws.send(JSON.stringify(makeOk(req, { ts: Date.now() })));
+    return;
+  }
+
+  // refresh-now: client-driven refresh (manual button or poll interval).
+  // Forces a fresh fetch of all active list subscriptions and publishes deltas.
+  if (req.type === /** @type {MessageType} */ ('refresh-now')) {
+    ws.send(JSON.stringify(makeOk(req, { ts: Date.now() })));
+    void refreshAllActiveListSubscriptions();
     return;
   }
 

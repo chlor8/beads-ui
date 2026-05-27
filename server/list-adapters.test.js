@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { runBdJson } from './bd.js';
 import {
+  clearListCache,
   fetchListForSubscription,
   mapSubscriptionToBdArgs
 } from './list-adapters.js';
@@ -10,6 +11,8 @@ vi.mock('./bd.js', () => ({ runBdJson: vi.fn() }));
 describe('list adapters for subscription types', () => {
   beforeEach(() => {
     /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+    // Reset the module-level result cache so each test starts cold.
+    clearListCache();
   });
 
   test('mapSubscriptionToBdArgs returns args for all-issues', () => {
@@ -175,5 +178,48 @@ describe('list adapters for subscription types', () => {
       expect(res.error.code).toBe('bad_request');
       expect(res.error.message).toMatch(/Unknown subscription type/);
     }
+  });
+
+  test('caches a fresh result so repeat fetches do not re-spawn bd', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJson).mockResolvedValue({
+      code: 0,
+      stdoutJson: [{ id: 'A-1', updated_at: 1, created_at: 1 }]
+    });
+    await fetchListForSubscription({ type: 'all-issues' });
+    await fetchListForSubscription({ type: 'all-issues' });
+    expect(runBdJson).toHaveBeenCalledTimes(1);
+  });
+
+  test('force bypasses the cache and re-spawns bd', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJson).mockResolvedValue({
+      code: 0,
+      stdoutJson: [{ id: 'A-1', updated_at: 1, created_at: 1 }]
+    });
+    await fetchListForSubscription({ type: 'all-issues' });
+    await fetchListForSubscription({ type: 'all-issues' }, { force: true });
+    expect(runBdJson).toHaveBeenCalledTimes(2);
+  });
+
+  test('de-dups concurrent identical fetches onto one bd invocation', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                code: 0,
+                stdoutJson: [{ id: 'A-1', updated_at: 1, created_at: 1 }]
+              }),
+            10
+          )
+        )
+    );
+    const [a, b] = await Promise.all([
+      fetchListForSubscription({ type: 'all-issues' }),
+      fetchListForSubscription({ type: 'all-issues' })
+    ]);
+    expect(runBdJson).toHaveBeenCalledTimes(1);
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
   });
 });

@@ -469,6 +469,70 @@ export function bootstrap(root_element) {
       // ignore missing header
     }
 
+    // Refresh control: manual button + auto-refresh interval (default 15s).
+    // Client-driven so the user controls load instead of relying solely on the
+    // watcher. Sends `refresh-now`; server force-refreshes active subscriptions.
+    try {
+      const btn_refresh = /** @type {HTMLButtonElement|null} */ (
+        document.getElementById('refresh-btn')
+      );
+      const sel_interval = /** @type {HTMLSelectElement|null} */ (
+        document.getElementById('refresh-interval')
+      );
+      /** @type {ReturnType<typeof setInterval> | null} */
+      let refresh_timer = null;
+      const requestRefresh = () => {
+        void tracked_send(/** @type {MessageType} */ ('refresh-now'), {}).catch(
+          () => {}
+        );
+      };
+      /** @param {number} seconds */
+      const applyInterval = (seconds) => {
+        if (refresh_timer) {
+          clearInterval(refresh_timer);
+          refresh_timer = null;
+        }
+        if (seconds > 0) {
+          refresh_timer = setInterval(requestRefresh, seconds * 1000);
+        }
+      };
+      // Restore persisted choice (default 15s)
+      let initial_seconds = 15;
+      try {
+        const raw = window.localStorage.getItem('beads-ui.refresh-interval');
+        if (raw !== null && ['0', '15', '30', '60'].includes(raw)) {
+          initial_seconds = Number(raw);
+        }
+      } catch {
+        // ignore
+      }
+      if (sel_interval) {
+        sel_interval.value = String(initial_seconds);
+        sel_interval.addEventListener('change', () => {
+          const seconds = Number(sel_interval.value) || 0;
+          try {
+            window.localStorage.setItem(
+              'beads-ui.refresh-interval',
+              String(seconds)
+            );
+          } catch {
+            // ignore
+          }
+          applyInterval(seconds);
+        });
+      }
+      if (btn_refresh) {
+        btn_refresh.addEventListener('click', () => {
+          btn_refresh.classList.add('is-spinning');
+          setTimeout(() => btn_refresh.classList.remove('is-spinning'), 600);
+          requestRefresh();
+        });
+      }
+      applyInterval(initial_seconds);
+    } catch {
+      // ignore missing header / timers
+    }
+
     // Local transport shim: for list-issues, serve from local listSelectors;
     // otherwise forward to ws transport for mutations/show.
     /**

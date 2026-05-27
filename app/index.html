@@ -25,6 +25,28 @@
           <span class="header-loading__spinner" aria-hidden="true"></span>
           <span class="visually-hidden">Loading</span>
         </div>
+        <div class="refresh-control">
+          <button
+            id="refresh-btn"
+            type="button"
+            class="refresh-btn"
+            aria-label="Refresh now"
+            title="Refresh now"
+          >
+            ↻
+          </button>
+          <select
+            id="refresh-interval"
+            class="refresh-interval"
+            aria-label="Auto-refresh interval"
+            title="Auto-refresh interval"
+          >
+            <option value="0">Manual</option>
+            <option value="15">15s</option>
+            <option value="30">30s</option>
+            <option value="60">60s</option>
+          </select>
+        </div>
         <label class="theme-toggle" title="Toggle dark mode">
           <span>Dark</span>
           <input
