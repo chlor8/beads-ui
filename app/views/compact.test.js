@@ -334,4 +334,78 @@ describe('views/compact', () => {
     ).map((el) => el.textContent?.trim());
     expect(collapsedIds).toEqual(['E-1']);
   });
+
+  test('priority renders as P0..P4 labels with color class', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createTestIssueStores();
+    seedIssues(issueStores);
+
+    const view = createCompactView(mount, () => {}, undefined, issueStores);
+    await view.load();
+
+    const first = mount.querySelector('.cmp-row .cmp-prio');
+    expect(first?.textContent?.trim()).toBe('P0');
+    expect(first?.classList.contains('is-p0')).toBe(true);
+  });
+
+  test('epic filter scopes to the epic subtree', async () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const issueStores = createTestIssueStores();
+    const base = new Date('2025-10-20T00:00:00.000Z').getTime();
+    issueStores.getStore('tab:issues').applyPush({
+      type: 'snapshot',
+      id: 'tab:issues',
+      revision: 1,
+      issues: [
+        {
+          id: 'EP-1',
+          title: 'epic one',
+          status: 'in_progress',
+          priority: 0,
+          issue_type: 'epic',
+          created_at: base + 1,
+          updated_at: base + 1
+        },
+        {
+          id: 'EP-1.1',
+          title: 'child',
+          status: 'open',
+          priority: 1,
+          issue_type: 'task',
+          created_at: base + 2,
+          updated_at: base + 2
+        },
+        {
+          id: 'OTHER-9',
+          title: 'unrelated',
+          status: 'open',
+          priority: 0,
+          issue_type: 'task',
+          created_at: base + 3,
+          updated_at: base + 3
+        }
+      ]
+    });
+
+    const view = createCompactView(mount, () => {}, undefined, issueStores);
+    await view.load();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.cmp-epic-select')
+    );
+    // The epic is listed as an option
+    const optionValues = Array.from(select.options).map((o) => o.value);
+    expect(optionValues).toContain('EP-1');
+
+    select.value = 'EP-1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const ids = Array.from(mount.querySelectorAll('.cmp-row .cmp-id')).map(
+      (el) => el.textContent?.trim()
+    );
+    // Epic + its child only; the in-progress epic still anchors the subtree
+    expect(ids).toEqual(['EP-1', 'EP-1.1']);
+  });
 });

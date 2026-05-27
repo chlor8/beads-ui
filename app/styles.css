@@ -2243,6 +2243,43 @@ html[data-theme='dark'] {
 }
 .cmp-prio {
   flex: 0 0 auto;
+  min-width: 2.1em;
+  padding: 0 5px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--badge-radius, 999px);
+  font-variant-numeric: tabular-nums;
+}
+.cmp-prio.is-p0 {
+  background: var(--badge-bg-p0);
+  color: var(--badge-fg-p0);
+}
+.cmp-prio.is-p1 {
+  background: var(--badge-bg-p1);
+  color: var(--badge-fg-p1);
+}
+.cmp-prio.is-p2 {
+  background: var(--badge-bg-p2);
+  color: var(--badge-fg-p2);
+}
+.cmp-prio.is-p3 {
+  background: var(--badge-bg-p3);
+  color: var(--badge-fg-p3);
+}
+.cmp-prio.is-p4 {
+  background: var(--badge-bg-p4);
+  color: var(--badge-fg-p4);
+}
+.cmp-epic-select {
+  flex: 0 1 auto;
+  max-width: 16em;
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid var(--control-border, var(--border));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
 }
 .cmp-id {
   flex: 0 0 auto;

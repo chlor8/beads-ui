@@ -3,7 +3,6 @@ import { createListSelectors } from '../data/list-selectors.js';
 import { cmpClosedDesc, cmpPriorityThenCreated } from '../data/sort.js';
 import { typeLabel } from '../utils/issue-type.js';
 import { debug } from '../utils/logging.js';
-import { emojiForPriority } from '../utils/priority-badge.js';
 import { priority_levels } from '../utils/priority.js';
 import { statusLabel } from '../utils/status.js';
 
@@ -88,6 +87,8 @@ export function createCompactView(
   /** @type {string | null} */
   let label_filter = null;
   /** @type {string | null} */
+  let epic_filter = null;
+  /** @type {string | null} */
   let selected_id = store ? store.getState().selected_id : null;
   /** @type {boolean} */
   let tree_mode = readTreePref();
@@ -116,6 +117,15 @@ export function createCompactView(
    */
   function computeFiltered() {
     let rows = issues_cache;
+    // Epic scope: the epic itself + its descendants (dotted-id prefix). Applied
+    // before status so an in-progress epic still anchors its subtree.
+    if (epic_filter) {
+      const ef = epic_filter;
+      rows = rows.filter((it) => {
+        const id = String(it.id);
+        return id === ef || id.startsWith(ef + '.');
+      });
+    }
     // Concrete-status narrowing (the subscription also narrows when a store is
     // wired; this keeps the client honest for the all-issues snapshot too).
     if (
@@ -230,6 +240,26 @@ export function createCompactView(
     doRender();
   }
 
+  /**
+   * Epics present in the snapshot, sorted by id — options for the epic filter.
+   *
+   * @returns {Issue[]}
+   */
+  function epicOptions() {
+    return issues_cache
+      .filter((it) => String(it.issue_type || '') === 'epic')
+      .slice()
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  }
+
+  /**
+   * @param {string | null} id
+   */
+  function setEpic(id) {
+    epic_filter = id && id.length > 0 ? id : null;
+    doRender();
+  }
+
   function toggleTree() {
     tree_mode = !tree_mode;
     try {
@@ -306,8 +336,8 @@ export function createCompactView(
           title=${statusLabel(it.status)}
           >${statusGlyph(it.status)}</span
         >
-        <span class="cmp-prio" title=${'Priority: ' + prio_label}
-          >${emojiForPriority(prio)}</span
+        <span class="cmp-prio is-p${prio}" title=${'Priority: ' + prio_label}
+          >P${prio}</span
         >
         <span class="cmp-id mono">${id}</span>
         <span class="cmp-title">${it.title || '(untitled)'}</span>
@@ -364,6 +394,20 @@ export function createCompactView(
           @input=${onSearchInput}
           .value=${search_text}
         />
+        <select
+          class="cmp-epic-select"
+          title="Filter to an epic"
+          @change=${(/** @type {Event} */ e) =>
+            setEpic(/** @type {HTMLSelectElement} */ (e.currentTarget).value)}
+        >
+          <option value="" ?selected=${!epic_filter}>All epics</option>
+          ${epicOptions().map(
+            (ep) =>
+              html`<option value=${ep.id} ?selected=${epic_filter === ep.id}>
+                ${ep.id} — ${ep.title || '(untitled)'}
+              </option>`
+          )}
+        </select>
         <button
           type="button"
           class="cmp-tree-toggle${tree_mode ? ' is-active' : ''}"
