@@ -312,11 +312,7 @@ describe('views/compact', () => {
     const view = createCompactView(mount, () => {}, undefined, issueStores);
     await view.load();
 
-    // Enable tree mode
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.cmp-tree-toggle')
-    ).click();
-
+    // Tree mode is the default — no toggle needed.
     const ids = Array.from(mount.querySelectorAll('.cmp-row .cmp-id')).map(
       (el) => el.textContent?.trim()
     );

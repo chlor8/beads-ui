@@ -38,6 +38,10 @@ function statusGlyph(status) {
       return '◐';
     case 'closed':
       return '✓';
+    case 'deferred':
+      return '❄';
+    case 'blocked':
+      return '●';
     default:
       return '○';
   }
@@ -92,12 +96,16 @@ export function createCompactView(
   /** @type {null | (() => void)} */
   let unsubscribe = null;
 
-  /** @returns {boolean} */
+  /**
+   * Tree grouping is the default; an explicit '0' in storage opts out.
+   *
+   * @returns {boolean}
+   */
   function readTreePref() {
     try {
-      return window.localStorage.getItem(TREE_KEY) === '1';
+      return window.localStorage.getItem(TREE_KEY) !== '0';
     } catch {
-      return false;
+      return true;
     }
   }
 
