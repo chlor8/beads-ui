@@ -12,6 +12,7 @@ import { createActivityIndicator } from './utils/activity-indicator.js';
 import { debug } from './utils/logging.js';
 import { showToast } from './utils/toast.js';
 import { createBoardView } from './views/board.js';
+import { createCompactView } from './views/compact.js';
 import { createDetailView } from './views/detail.js';
 import { createEpicsView } from './views/epics.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
@@ -38,6 +39,7 @@ export function bootstrap(root_element) {
     </section>
     <section id="epics-root" class="route epics" hidden></section>
     <section id="board-root" class="route board" hidden></section>
+    <section id="compact-root" class="route compact panel" hidden></section>
     <section id="detail-panel" class="route detail" hidden></section>
   `;
   render(shell, root_element);
@@ -50,6 +52,8 @@ export function bootstrap(root_element) {
   const epics_root = document.getElementById('epics-root');
   /** @type {HTMLElement|null} */
   const board_root = document.getElementById('board-root');
+  /** @type {HTMLElement|null} */
+  const compact_root = document.getElementById('compact-root');
 
   /** @type {HTMLElement|null} */
   const list_mount = document.getElementById('list-panel');
@@ -382,14 +386,15 @@ export function bootstrap(root_element) {
       log('filters parse error: %o', err);
     }
     // Load last-view from storage
-    /** @type {'issues'|'epics'|'board'} */
+    /** @type {'issues'|'epics'|'board'|'compact'} */
     let last_view = 'issues';
     try {
       const raw_view = window.localStorage.getItem('beads-ui.view');
       if (
         raw_view === 'issues' ||
         raw_view === 'epics' ||
-        raw_view === 'board'
+        raw_view === 'board' ||
+        raw_view === 'compact'
       ) {
         last_view = raw_view;
       }
@@ -519,7 +524,7 @@ export function bootstrap(root_element) {
       const s = store.getState();
       store.setState({ selected_id: null });
       try {
-        /** @type {'issues'|'epics'|'board'} */
+        /** @type {'issues'|'epics'|'board'|'compact'} */
         const v = s.view || 'issues';
         router.gotoView(v);
       } catch {
@@ -641,9 +646,19 @@ export function bootstrap(root_element) {
       sub_issue_stores,
       transport
     );
+    // Compact (bd-list-style) view: renders from the shared `tab:issues` store,
+    // so it issues no extra bd calls. Mounted only when compact_root exists.
+    const compact_view = compact_root
+      ? createCompactView(
+          compact_root,
+          (id) => router.gotoIssue(id),
+          store,
+          sub_issue_stores
+        )
+      : null;
     // Preload epics when switching to view
     /**
-     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board', filters: any }} s
+     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'compact', filters: any }} s
      */
     // --- Subscriptions: tab-level management and filter-driven updates ---
     /** @type {null | (() => Promise<void>)} */
@@ -697,11 +712,11 @@ export function bootstrap(root_element) {
     /**
      * Ensure only the active tab has subscriptions; clean up previous.
      *
-     * @param {{ view: 'issues'|'epics'|'board', filters: any }} s
+     * @param {{ view: 'issues'|'epics'|'board'|'compact', filters: any }} s
      */
     function ensureTabSubscriptions(s) {
-      // Issues tab
-      if (s.view === 'issues') {
+      // Issues tab — also drives the Compact view (shares the tab:issues store)
+      if (s.view === 'issues' || s.view === 'compact') {
         const spec = computeIssuesSpec(s.filters || {});
         const key = JSON.stringify(spec);
         // Register store first to capture the initial snapshot
@@ -920,7 +935,7 @@ export function bootstrap(root_element) {
     /**
      * Manage route visibility and list subscriptions per view.
      *
-     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board', filters: any }} s
+     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'compact', filters: any }} s
      */
     const onRouteChange = (s) => {
       if (issues_root && epics_root && board_root && detail_mount) {
@@ -928,6 +943,9 @@ export function bootstrap(root_element) {
         issues_root.hidden = s.view !== 'issues';
         epics_root.hidden = s.view !== 'epics';
         board_root.hidden = s.view !== 'board';
+        if (compact_root) {
+          compact_root.hidden = s.view !== 'compact';
+        }
         // detail_mount visibility handled in subscription above
       }
       // Ensure subscriptions for the active tab before loading the view to
@@ -938,6 +956,9 @@ export function bootstrap(root_element) {
       }
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();
+      }
+      if (s.view === 'compact' && compact_view) {
+        void compact_view.load();
       }
       window.localStorage.setItem('beads-ui.view', s.view);
     };

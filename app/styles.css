@@ -2118,3 +2118,101 @@ html[data-theme='dark'] {
 .dependent-count:hover {
   color: var(--fg);
 }
+
+/* --- Compact (bd-list-style) view ----------------------------------------- */
+.route.compact {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.cmp-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cmp-header input[type='search'] {
+  flex: 1 1 auto;
+}
+.cmp-count {
+  flex: 0 0 auto;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.cmp-body {
+  overflow: auto;
+  padding: 2px 0;
+}
+.cmp-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 12px;
+  border: 0;
+  border-left: 2px solid transparent;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+.cmp-row:hover {
+  background: color-mix(in srgb, var(--panel-bg) 60%, transparent);
+}
+.cmp-row:focus,
+.cmp-row.is-selected {
+  outline: none;
+  background: color-mix(in srgb, var(--link, #2563eb) 12%, transparent);
+  border-left-color: var(--link, #2563eb);
+}
+.cmp-row.is-closed .cmp-title {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+.cmp-glyph {
+  flex: 0 0 auto;
+  width: 1em;
+  text-align: center;
+}
+.cmp-glyph--open {
+  color: var(--status-open-base);
+}
+.cmp-glyph--in_progress {
+  color: var(--status-in-progress-base);
+}
+.cmp-glyph--closed {
+  color: var(--status-closed-base);
+}
+.cmp-prio {
+  flex: 0 0 auto;
+}
+.cmp-id {
+  flex: 0 0 auto;
+  min-width: 7.5em;
+  color: var(--muted);
+  font-size: 12px;
+}
+.cmp-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cmp-type {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.cmp-assignee {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
