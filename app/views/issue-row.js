@@ -18,7 +18,8 @@ import { createTypeBadge } from '../utils/type-badge.js';
  *   onUpdate: (id: string, patch: { title?: string, assignee?: string, status?: 'open'|'in_progress'|'closed', priority?: number }) => Promise<void>,
  *   requestRender: () => void,
  *   getSelectedId?: () => string | null,
- *   row_class?: string
+ *   row_class?: string,
+ *   getDragHandlers?: (id: string) => { dragstart: (e: DragEvent) => void, dragover: (e: DragEvent) => void, dragleave: () => void, drop: (e: DragEvent) => Promise<void>, dragend: () => void, is_source: boolean, is_over: boolean } | null
  * }} options
  * @returns {(it: IssueRowData) => import('lit-html').TemplateResult<1>}
  */
@@ -28,6 +29,7 @@ export function createIssueRowRenderer(options) {
   const request_render = options.requestRender;
   const get_selected_id = options.getSelectedId || (() => null);
   const row_class = options.row_class || 'issue-row';
+  const get_drag_handlers = options.getDragHandlers || null;
 
   /** @type {Set<string>} */
   const editing = new Set();
@@ -141,12 +143,21 @@ export function createIssueRowRenderer(options) {
     const cur_status = String(it.status || 'open');
     const cur_prio = String(it.priority ?? 2);
     const is_selected = get_selected_id() === it.id;
+    const drag = get_drag_handlers ? get_drag_handlers(String(it.id || '')) : null;
     return html`<tr
       role="row"
-      class="${row_class} ${is_selected ? 'selected' : ''}"
+      class="${row_class} ${is_selected ? 'selected' : ''}${drag?.is_over ? ' drag-over' : ''}${drag?.is_source ? ' drag-source' : ''}"
       data-issue-id=${it.id}
+      ?draggable=${!!drag}
+      @dragstart=${drag ? drag.dragstart : null}
+      @dragover=${drag ? drag.dragover : null}
+      @dragleave=${drag ? drag.dragleave : null}
+      @drop=${drag ? drag.drop : null}
+      @dragend=${drag ? drag.dragend : null}
       @click=${makeRowClick(it.id)}
+      style=${drag?.is_source ? 'opacity:0.4' : ''}
     >
+      ${drag ? html`<td class="drag-handle" title="Drag to reorder priority" style="cursor:grab;color:var(--text-muted,#6b7280);padding:0 6px;text-align:center;user-select:none">⠿</td>` : ''}
       <td role="gridcell" class="mono">${createIssueIdRenderer(it.id)}</td>
       <td role="gridcell">${createTypeBadge(it.issue_type)}</td>
       <td role="gridcell">${editableText(it.id, 'title', it.title || '')}</td>

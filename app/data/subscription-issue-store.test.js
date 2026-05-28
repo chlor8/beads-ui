@@ -144,7 +144,7 @@ describe('subscription issue store', () => {
     expect(ids).toEqual(['B']);
   });
 
-  test('subscribe emits exactly once per applyPush', () => {
+  test('snapshot emits immediately; upsert/delete batch via microtask', async () => {
     const store = createSubscriptionIssueStore('s1');
     let count = 0;
     store.subscribe(() => {
@@ -158,6 +158,8 @@ describe('subscription issue store', () => {
         { id: 'A', created_at: 10_000, updated_at: 10_000, closed_at: null }
       ]
     });
+    // snapshot emits synchronously
+    expect(count).toBe(1);
     store.applyPush({
       type: 'upsert',
       id: 's1',
@@ -170,6 +172,8 @@ describe('subscription issue store', () => {
         closed_at: null
       }
     });
+    // upsert schedules via queueMicrotask — flush it
+    await new Promise((r) => queueMicrotask(r));
     expect(count).toBe(2);
   });
 

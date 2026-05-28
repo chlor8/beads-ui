@@ -42,6 +42,16 @@ export function createSubscriptionIssueStore(id, options = {}) {
     }
   }
 
+  let emit_scheduled = false;
+  function scheduleEmit() {
+    if (emit_scheduled) return;
+    emit_scheduled = true;
+    queueMicrotask(() => {
+      emit_scheduled = false;
+      emit();
+    });
+  }
+
   function rebuildOrdered() {
     ordered = Array.from(items_by_id.values()).sort(sort);
   }
@@ -116,7 +126,7 @@ export function createSubscriptionIssueStore(id, options = {}) {
         rebuildOrdered();
       }
       last_revision = rev;
-      emit();
+      scheduleEmit();
     } else if (msg.type === 'delete') {
       const rid = String(msg.issue_id || '');
       if (rid) {
@@ -124,7 +134,7 @@ export function createSubscriptionIssueStore(id, options = {}) {
         rebuildOrdered();
       }
       last_revision = rev;
-      emit();
+      scheduleEmit();
     }
   }
 

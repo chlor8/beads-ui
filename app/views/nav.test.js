@@ -40,6 +40,6 @@ describe('views/nav', () => {
     links[2].dispatchEvent(new MouseEvent('click', { bubbles: true }));
     expect(router.gotoView).toHaveBeenCalledWith('board');
     links[3].dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(router.gotoView).toHaveBeenCalledWith('compact');
+    expect(router.gotoView).toHaveBeenCalledWith('deps');
   });
 });

@@ -515,7 +515,7 @@ describe('views/epics', () => {
     });
     await view.load();
     const titleSpan = /** @type {HTMLElement|null} */ (
-      mount.querySelector('tr.epic-row td:nth-child(3) .editable')
+      mount.querySelector('tr.epic-row td:nth-child(4) .editable')
     );
     expect(titleSpan).not.toBeNull();
     titleSpan?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -523,7 +523,7 @@ describe('views/epics', () => {
     expect(navCalls.length).toBe(0);
     // Should render an input for title now
     const input = /** @type {HTMLInputElement|null} */ (
-      mount.querySelector('tr.epic-row td:nth-child(3) input[type="text"]')
+      mount.querySelector('tr.epic-row td:nth-child(4) input[type="text"]')
     );
     expect(input).not.toBeNull();
   });

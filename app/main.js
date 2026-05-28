@@ -12,7 +12,7 @@ import { createActivityIndicator } from './utils/activity-indicator.js';
 import { debug } from './utils/logging.js';
 import { showToast } from './utils/toast.js';
 import { createBoardView } from './views/board.js';
-import { createCompactView } from './views/compact.js';
+import { createDepsView } from './views/deps.js';
 import { createDetailView } from './views/detail.js';
 import { createEpicsView } from './views/epics.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
@@ -39,7 +39,7 @@ export function bootstrap(root_element) {
     </section>
     <section id="epics-root" class="route epics" hidden></section>
     <section id="board-root" class="route board" hidden></section>
-    <section id="compact-root" class="route compact panel" hidden></section>
+    <section id="deps-root" class="route deps panel" hidden></section>
     <section id="detail-panel" class="route detail" hidden></section>
   `;
   render(shell, root_element);
@@ -53,7 +53,7 @@ export function bootstrap(root_element) {
   /** @type {HTMLElement|null} */
   const board_root = document.getElementById('board-root');
   /** @type {HTMLElement|null} */
-  const compact_root = document.getElementById('compact-root');
+  const deps_root = document.getElementById('deps-root');
 
   /** @type {HTMLElement|null} */
   const list_mount = document.getElementById('list-panel');
@@ -185,6 +185,10 @@ export function bootstrap(root_element) {
         void unsub_board_blocked().catch(() => {});
         unsub_board_blocked = null;
       }
+      if (unsub_deps_tab) {
+        void unsub_deps_tab().catch(() => {});
+        unsub_deps_tab = null;
+      }
       // Clear all subscription stores
       const storeIds = [
         'tab:issues',
@@ -192,7 +196,8 @@ export function bootstrap(root_element) {
         'tab:board:ready',
         'tab:board:in-progress',
         'tab:board:closed',
-        'tab:board:blocked'
+        'tab:board:blocked',
+        'tab:deps'
       ];
       for (const id of storeIds) {
         try {
@@ -386,7 +391,7 @@ export function bootstrap(root_element) {
       log('filters parse error: %o', err);
     }
     // Load last-view from storage
-    /** @type {'issues'|'epics'|'board'|'compact'} */
+    /** @type {'issues'|'epics'|'board'|'deps'} */
     let last_view = 'issues';
     try {
       const raw_view = window.localStorage.getItem('beads-ui.view');
@@ -394,7 +399,7 @@ export function bootstrap(root_element) {
         raw_view === 'issues' ||
         raw_view === 'epics' ||
         raw_view === 'board' ||
-        raw_view === 'compact'
+        raw_view === 'deps'
       ) {
         last_view = raw_view;
       }
@@ -588,7 +593,7 @@ export function bootstrap(root_element) {
       const s = store.getState();
       store.setState({ selected_id: null });
       try {
-        /** @type {'issues'|'epics'|'board'|'compact'} */
+        /** @type {'issues'|'epics'|'board'|'deps'} */
         const v = s.view || 'issues';
         router.gotoView(v);
       } catch {
@@ -710,19 +715,17 @@ export function bootstrap(root_element) {
       sub_issue_stores,
       transport
     );
-    // Compact (bd-list-style) view: renders from the shared `tab:issues` store,
-    // so it issues no extra bd calls. Mounted only when compact_root exists.
-    const compact_view = compact_root
-      ? createCompactView(
-          compact_root,
+    // Deps view: SVG DAG of all issues + dependency edges.
+    const deps_view = deps_root
+      ? createDepsView(
+          deps_root,
           (id) => router.gotoIssue(id),
-          store,
           sub_issue_stores
         )
       : null;
     // Preload epics when switching to view
     /**
-     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'compact', filters: any }} s
+     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'deps', filters: any }} s
      */
     // --- Subscriptions: tab-level management and filter-driven updates ---
     /** @type {null | (() => Promise<void>)} */
@@ -737,6 +740,8 @@ export function bootstrap(root_element) {
     let unsub_board_closed = null;
     /** @type {null | (() => Promise<void>)} */
     let unsub_board_blocked = null;
+    /** @type {null | (() => Promise<void>)} */
+    let unsub_deps_tab = null;
 
     // Track in-flight subscriptions to prevent duplicates during rapid view switching
     /** @type {Set<string>} */
@@ -774,13 +779,16 @@ export function bootstrap(root_element) {
     /** @type {string|null} */
     let last_issues_spec_key = null;
     /**
-     * Ensure only the active tab has subscriptions; clean up previous.
+     * Keep all tab subscriptions alive once started; only tear down on workspace switch.
+     * Subscriptions are started on first visit and then left running in the background.
+     * This prevents full-snapshot re-sends and visible flicker on tab switch.
      *
-     * @param {{ view: 'issues'|'epics'|'board'|'compact', filters: any }} s
+     * @param {{ view: 'issues'|'epics'|'board'|'deps', filters: any }} s
      */
     function ensureTabSubscriptions(s) {
-      // Issues tab — also drives the Compact view (shares the tab:issues store)
-      if (s.view === 'issues' || s.view === 'compact') {
+      // Issues tab — subscribe based on current filter spec.
+      // Re-subscribes only when filter spec changes, never on view switch.
+      {
         const spec = computeIssuesSpec(s.filters || {});
         const key = JSON.stringify(spec);
         // Register store first to capture the initial snapshot
@@ -789,12 +797,17 @@ export function bootstrap(root_element) {
         } catch (err) {
           log('register issues store failed: %o', err);
         }
-        // Only (re)subscribe if not yet subscribed, spec changed, and not already in-flight
+        // Only (re)subscribe if spec changed or not yet subscribed
         const issues_sub_key = `tab:issues:${key}`;
         if (
           (!unsub_issues_tab || key !== last_issues_spec_key) &&
           !pending_subscriptions.has(issues_sub_key)
         ) {
+          // Cancel previous spec subscription before starting new one
+          if (unsub_issues_tab && key !== last_issues_spec_key) {
+            void unsub_issues_tab().catch(() => {});
+            unsub_issues_tab = null;
+          }
           pending_subscriptions.add(issues_sub_key);
           void subscriptions
             .subscribeList('tab:issues', spec)
@@ -810,19 +823,10 @@ export function bootstrap(root_element) {
               pending_subscriptions.delete(issues_sub_key);
             });
         }
-      } else if (unsub_issues_tab) {
-        void unsub_issues_tab().catch(() => {});
-        unsub_issues_tab = null;
-        last_issues_spec_key = null;
-        try {
-          sub_issue_stores.unregister('tab:issues');
-        } catch (err) {
-          log('unregister issues store failed: %o', err);
-        }
       }
 
-      // Epics tab
-      if (s.view === 'epics') {
+      // Epics tab — subscribe once and keep alive
+      {
         // Register store first to avoid race with initial snapshot
         try {
           sub_issue_stores.register('tab:epics', { type: 'epics' });
@@ -845,18 +849,33 @@ export function bootstrap(root_element) {
               pending_subscriptions.delete('tab:epics');
             });
         }
-      } else if (unsub_epics_tab) {
-        void unsub_epics_tab().catch(() => {});
-        unsub_epics_tab = null;
+      }
+
+      // Deps tab — always subscribed to all-issues for full dep graph
+      {
         try {
-          sub_issue_stores.unregister('tab:epics');
+          sub_issue_stores.register('tab:deps', { type: 'all-issues' });
         } catch (err) {
-          log('unregister epics store failed: %o', err);
+          log('register deps store failed: %o', err);
+        }
+        if (!unsub_deps_tab && !pending_subscriptions.has('tab:deps')) {
+          pending_subscriptions.add('tab:deps');
+          void subscriptions
+            .subscribeList('tab:deps', { type: 'all-issues' })
+            .then((unsub) => {
+              unsub_deps_tab = unsub;
+            })
+            .catch((err) => {
+              log('subscribe deps failed: %o', err);
+            })
+            .finally(() => {
+              pending_subscriptions.delete('tab:deps');
+            });
         }
       }
 
-      // Board tab subscribes to lists used by columns
-      if (s.view === 'board') {
+      // Board tab — subscribe all 4 columns once and keep alive
+      {
         // Ready column
         if (
           !unsub_board_ready &&
@@ -955,51 +974,13 @@ export function bootstrap(root_element) {
               pending_subscriptions.delete('tab:board:blocked');
             });
         }
-      } else {
-        // Unsubscribe all board lists when leaving the board view
-        if (unsub_board_ready) {
-          void unsub_board_ready().catch(() => {});
-          unsub_board_ready = null;
-          try {
-            sub_issue_stores.unregister('tab:board:ready');
-          } catch (err) {
-            log('unregister board:ready failed: %o', err);
-          }
-        }
-        if (unsub_board_in_progress) {
-          void unsub_board_in_progress().catch(() => {});
-          unsub_board_in_progress = null;
-          try {
-            sub_issue_stores.unregister('tab:board:in-progress');
-          } catch (err) {
-            log('unregister board:in-progress failed: %o', err);
-          }
-        }
-        if (unsub_board_closed) {
-          void unsub_board_closed().catch(() => {});
-          unsub_board_closed = null;
-          try {
-            sub_issue_stores.unregister('tab:board:closed');
-          } catch (err) {
-            log('unregister board:closed failed: %o', err);
-          }
-        }
-        if (unsub_board_blocked) {
-          void unsub_board_blocked().catch(() => {});
-          unsub_board_blocked = null;
-          try {
-            sub_issue_stores.unregister('tab:board:blocked');
-          } catch (err) {
-            log('unregister board:blocked failed: %o', err);
-          }
-        }
       }
     }
 
     /**
      * Manage route visibility and list subscriptions per view.
      *
-     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'compact', filters: any }} s
+     * @param {{ selected_id: string | null, view: 'issues'|'epics'|'board'|'deps', filters: any }} s
      */
     const onRouteChange = (s) => {
       if (issues_root && epics_root && board_root && detail_mount) {
@@ -1007,8 +988,8 @@ export function bootstrap(root_element) {
         issues_root.hidden = s.view !== 'issues';
         epics_root.hidden = s.view !== 'epics';
         board_root.hidden = s.view !== 'board';
-        if (compact_root) {
-          compact_root.hidden = s.view !== 'compact';
+        if (deps_root) {
+          deps_root.hidden = s.view !== 'deps';
         }
         // detail_mount visibility handled in subscription above
       }
@@ -1021,8 +1002,8 @@ export function bootstrap(root_element) {
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();
       }
-      if (s.view === 'compact' && compact_view) {
-        void compact_view.load();
+      if (s.view === 'deps' && deps_view) {
+        deps_view.load();
       }
       window.localStorage.setItem('beads-ui.view', s.view);
     };
