@@ -38,6 +38,11 @@ export function createEpicsView(
   const epic_unsubs = new Map();
   // Centralized selection helpers
   const selectors = issue_stores ? createListSelectors(issue_stores) : null;
+  // Drag state for priority reordering
+  /** @type {string|null} */
+  let drag_source_id = null;
+  /** @type {string|null} */
+  let drag_over_id = null;
   // Live re-render on pushes: recompute groups when stores change
   if (selectors) {
     selectors.subscribe(() => {
@@ -54,13 +59,68 @@ export function createEpicsView(
     });
   }
 
+  /**
+   * HTML5 drag handlers for priority reordering.
+   * Dragging row A onto row B sets A's priority to B's priority.
+   * @param {string} id
+   */
+  function makeDragHandlers(id) {
+    return {
+      is_source: drag_source_id === id,
+      is_over: drag_over_id === id,
+      dragstart: (/** @type {DragEvent} */ e) => {
+        drag_source_id = id;
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', id);
+        }
+      },
+      dragover: (/** @type {DragEvent} */ e) => {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        if (drag_over_id !== id) {
+          drag_over_id = id;
+          doRender();
+        }
+      },
+      dragleave: () => {
+        if (drag_over_id === id) {
+          drag_over_id = null;
+          doRender();
+        }
+      },
+      drop: async (/** @type {DragEvent} */ e) => {
+        e.preventDefault();
+        const src = drag_source_id;
+        drag_source_id = null;
+        drag_over_id = null;
+        doRender();
+        if (!src || src === id) return;
+        for (const epic_id of Array.from(expanded)) {
+          const children = selectors ? selectors.selectEpicChildren(epic_id) : [];
+          const target = children.find((c) => String(c.id) === id);
+          if (target && typeof target.priority === 'number') {
+            await updateInline(src, { priority: target.priority });
+            return;
+          }
+        }
+      },
+      dragend: () => {
+        drag_source_id = null;
+        drag_over_id = null;
+        doRender();
+      }
+    };
+  }
+
   // Shared row renderer used for children rows
   const renderRow = createIssueRowRenderer({
     navigate: (id) => goto_issue(id),
     onUpdate: updateInline,
     requestRender: doRender,
     getSelectedId: () => null,
-    row_class: 'epic-row'
+    row_class: 'epic-row',
+    getDragHandlers: (id) => makeDragHandlers(id)
   });
 
   function doRender() {
@@ -118,6 +178,7 @@ export function createEpicsView(
                   ? html`<div class="muted">No issues found</div>`
                   : html`<table class="table">
                       <colgroup>
+                        <col style="width: 24px" />
                         <col style="width: 100px" />
                         <col style="width: 120px" />
                         <col />
@@ -127,6 +188,7 @@ export function createEpicsView(
                       </colgroup>
                       <thead>
                         <tr>
+                          <th></th>
                           <th>ID</th>
                           <th>Type</th>
                           <th>Title</th>

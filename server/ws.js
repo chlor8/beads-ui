@@ -8,7 +8,7 @@ import { WebSocketServer } from 'ws';
 import { isRequest, makeError, makeOk } from '../app/protocol.js';
 import { getGitUserName, runBd, runBdJson } from './bd.js';
 import { resolveWorkspaceDatabase } from './db.js';
-import { fetchListForSubscription } from './list-adapters.js';
+import { clearListCache, fetchListForSubscription } from './list-adapters.js';
 import { debug } from './logging.js';
 import { getAvailableWorkspaces } from './registry-watcher.js';
 import { keyOf, registry } from './subscriptions.js';
@@ -23,6 +23,14 @@ const log = debug('ws');
 /** @type {ReturnType<typeof setTimeout> | null} */
 let REFRESH_TIMER = null;
 let REFRESH_DEBOUNCE_MS = 75;
+
+/**
+ * Guard so overlapping refresh passes (watcher + poll + mutation) coalesce
+ * instead of piling up serialized bd spawns. While a pass runs, further
+ * requests set a pending flag; one trailing pass runs after the current one.
+ */
+let REFRESH_RUNNING = false;
+let REFRESH_PENDING = false;
 
 /**
  * Mutation refresh window gate. When active, watcher-driven list refresh
@@ -137,17 +145,31 @@ function collectActiveListSpecs() {
  * Run refresh for all active list subscription specs and publish deltas.
  */
 async function refreshAllActiveListSubscriptions() {
-  const specs = collectActiveListSpecs();
-  // Run refreshes concurrently; locking is handled per key in the registry
-  await Promise.all(
-    specs.map(async (spec) => {
-      try {
-        await refreshAndPublish(spec);
-      } catch {
-        // ignore refresh errors per spec
-      }
-    })
-  );
+  // Coalesce overlapping passes: if one is already running, mark pending and
+  // let the in-flight pass run one more time after it finishes.
+  if (REFRESH_RUNNING) {
+    REFRESH_PENDING = true;
+    return;
+  }
+  REFRESH_RUNNING = true;
+  try {
+    do {
+      REFRESH_PENDING = false;
+      const specs = collectActiveListSpecs();
+      // Run refreshes concurrently; locking is handled per key in the registry
+      await Promise.all(
+        specs.map(async (spec) => {
+          try {
+            await refreshAndPublish(spec);
+          } catch {
+            // ignore refresh errors per spec
+          }
+        })
+      );
+    } while (REFRESH_PENDING);
+  } finally {
+    REFRESH_RUNNING = false;
+  }
 }
 
 /**
@@ -337,8 +359,11 @@ function emitSubscriptionDelete(ws, client_id, key, issue_id) {
 async function refreshAndPublish(spec) {
   const key = keyOf(spec);
   await registry.withKeyLock(key, async () => {
+    // Live refresh must reflect the change that triggered it — bypass the
+    // cache read (but still repopulate it for cheap re-subscribes).
     const res = await fetchListForSubscription(spec, {
-      cwd: CURRENT_WORKSPACE?.root_dir
+      cwd: CURRENT_WORKSPACE?.root_dir,
+      force: true
     });
     if (!res.ok) {
       log('refresh failed for %s: %s %o', key, res.error.message, res.error);
@@ -541,6 +566,8 @@ export function attachWsServer(http_server, options = {}) {
 
       // Clear existing registry entries and refresh all subscriptions
       registry.clear();
+      // Drop cached list results so the new workspace can't serve stale data
+      clearListCache();
 
       // Broadcast workspace-changed event to all clients
       broadcast('workspace-changed', CURRENT_WORKSPACE);
@@ -600,6 +627,14 @@ export async function handleMessage(ws, data) {
   // Dispatch known types here as we implement them. For now, only a ping utility.
   if (req.type === /** @type {MessageType} */ ('ping')) {
     ws.send(JSON.stringify(makeOk(req, { ts: Date.now() })));
+    return;
+  }
+
+  // refresh-now: client-driven refresh (manual button or poll interval).
+  // Forces a fresh fetch of all active list subscriptions and publishes deltas.
+  if (req.type === /** @type {MessageType} */ ('refresh-now')) {
+    ws.send(JSON.stringify(makeOk(req, { ts: Date.now() })));
+    void refreshAllActiveListSubscriptions();
     return;
   }
 

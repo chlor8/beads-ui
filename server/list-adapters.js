@@ -4,6 +4,52 @@ import { debug } from './logging.js';
 const log = debug('list-adapters');
 
 /**
+ * Short-TTL result cache + in-flight de-duplication for list fetches.
+ *
+ * Each `bd` invocation here is a process spawn + (often remote) Dolt round-trip
+ * costing hundreds of ms to seconds, and every invocation is globally
+ * serialized. Two cheap wins, no change to bd as source of truth:
+ *  - de-dup: concurrent identical fetches share one in-flight promise.
+ *  - cache: a fresh result is reused for a short window, so re-subscribing on
+ *    view switches (or a second client/tab) costs nothing.
+ * Watcher/mutation-driven refreshes pass `{ force: true }` to bypass the cache
+ * read and repopulate with fresh data, so live updates stay correct.
+ */
+const CACHE_TTL_MS = (() => {
+  const raw = Number(process.env.BDUI_LIST_CACHE_TTL_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 2000;
+})();
+
+/** @type {Map<string, { expires: number, value: FetchListResultSuccess }>} */
+const _cache = new Map();
+/** @type {Map<string, Promise<FetchListResultSuccess | FetchListResultFailure>>} */
+const _inflight = new Map();
+
+/**
+ * @param {string} key
+ * @returns {FetchListResultSuccess | null}
+ */
+function cacheGet(key) {
+  const hit = _cache.get(key);
+  if (!hit) {
+    return null;
+  }
+  if (hit.expires <= Date.now()) {
+    _cache.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+/**
+ * Clear the list cache (e.g. on workspace switch). In-flight fetches are left
+ * to settle; only memoized results are dropped.
+ */
+export function clearListCache() {
+  _cache.clear();
+}
+
+/**
  * Build concrete `bd` CLI args for a subscription type + params.
  * Always includes `--json` for parseable output.
  *
@@ -110,7 +156,7 @@ export function normalizeIssueList(value) {
  * Errors do not throw; they are surfaced as a structured object.
  *
  * @param {{ type: string, params?: Record<string, string | number | boolean> }} spec
- * @param {{ cwd?: string }} [options] - Optional working directory for bd command
+ * @param {{ cwd?: string, force?: boolean }} [options] - cwd for bd; `force` bypasses the cache read (used by live refresh)
  * @returns {Promise<FetchListResultSuccess | FetchListResultFailure>}
  */
 export async function fetchListForSubscription(spec, options = {}) {
@@ -125,90 +171,123 @@ export async function fetchListForSubscription(spec, options = {}) {
     return { ok: false, error: e };
   }
 
-  try {
-    const res = await runBdJson(args, { cwd: options.cwd });
-    if (!res || res.code !== 0 || !('stdoutJson' in res)) {
-      log(
-        'bd failed for %o (args=%o) code=%s stderr=%s',
-        spec,
-        args,
-        res?.code,
-        res?.stderr || ''
-      );
+  const cache_key = `${JSON.stringify(args)}|${options.cwd || ''}`;
+  if (options.force !== true) {
+    const cached = cacheGet(cache_key);
+    if (cached) {
+      log('cache hit %s', cache_key);
+      return cached;
+    }
+  }
+  // De-dup concurrent identical fetches (force or not) onto one bd invocation.
+  const existing = _inflight.get(cache_key);
+  if (existing) {
+    log('inflight join %s', cache_key);
+    return existing;
+  }
+
+  /** @returns {Promise<FetchListResultSuccess | FetchListResultFailure>} */
+  const run = async () => {
+    try {
+      const res = await runBdJson(args, { cwd: options.cwd });
+      if (!res || res.code !== 0 || !('stdoutJson' in res)) {
+        log(
+          'bd failed for %o (args=%o) code=%s stderr=%s',
+          spec,
+          args,
+          res?.code,
+          res?.stderr || ''
+        );
+        return {
+          ok: false,
+          error: {
+            code: 'bd_error',
+            message: String(res?.stderr || 'bd failed'),
+            details: { exit_code: res?.code ?? -1 }
+          }
+        };
+      }
+      // bd show may return a single object; normalize to an array first
+      let raw = Array.isArray(res.stdoutJson)
+        ? res.stdoutJson
+        : res.stdoutJson && typeof res.stdoutJson === 'object'
+          ? [res.stdoutJson]
+          : [];
+
+      // Special-case mapping for `epics`: current bd output nests the epic under
+      // an `epic` key and exposes counters at the top level. Flatten so that
+      // each entry has a top-level `id` and core fields expected by the registry.
+      if (String(spec.type) === 'epics') {
+        raw = raw.map((it) => {
+          if (it && typeof it === 'object' && 'epic' in it) {
+            const e = /** @type {any} */ (it).epic || {};
+            /** @type {Record<string, unknown>} */
+            const flat = {
+              // Required minimal fields for registry + client rendering
+              id: String(e.id ?? ''),
+              title: e.title,
+              status: e.status,
+              issue_type: e.issue_type || 'epic',
+              created_at: e.created_at,
+              updated_at: e.updated_at,
+              closed_at: e.closed_at ?? null,
+              deleted_at: e.deleted_at ?? null,
+              // Preserve useful counters from bd output
+              total_children: /** @type {any} */ (it).total_children,
+              closed_children: /** @type {any} */ (it).closed_children,
+              eligible_for_close: /** @type {any} */ (it).eligible_for_close
+            };
+            return flat;
+          }
+          return it;
+        });
+        raw = raw.filter((it) => {
+          if (!it || typeof it !== 'object') {
+            return false;
+          }
+          const status =
+            typeof (/** @type {any} */ (it).status) === 'string'
+              ? /** @type {any} */ (it).status
+              : '';
+          if (status === 'tombstone') {
+            return false;
+          }
+          const deleted_at = /** @type {any} */ (it).deleted_at;
+          if (deleted_at !== undefined && deleted_at !== null) {
+            return false;
+          }
+          return true;
+        });
+      }
+
+      const items = normalizeIssueList(raw);
+      return { ok: true, items };
+    } catch (err) {
+      log('bd invocation failed for %o (args=%o): %o', spec, args, err);
       return {
         ok: false,
         error: {
           code: 'bd_error',
-          message: String(res?.stderr || 'bd failed'),
-          details: { exit_code: res?.code ?? -1 }
+          message:
+            (err && /** @type {any} */ (err).message) || 'bd invocation failed'
         }
       };
     }
-    // bd show may return a single object; normalize to an array first
-    let raw = Array.isArray(res.stdoutJson)
-      ? res.stdoutJson
-      : res.stdoutJson && typeof res.stdoutJson === 'object'
-        ? [res.stdoutJson]
-        : [];
+  };
 
-    // Special-case mapping for `epics`: current bd output nests the epic under
-    // an `epic` key and exposes counters at the top level. Flatten so that
-    // each entry has a top-level `id` and core fields expected by the registry.
-    if (String(spec.type) === 'epics') {
-      raw = raw.map((it) => {
-        if (it && typeof it === 'object' && 'epic' in it) {
-          const e = /** @type {any} */ (it).epic || {};
-          /** @type {Record<string, unknown>} */
-          const flat = {
-            // Required minimal fields for registry + client rendering
-            id: String(e.id ?? ''),
-            title: e.title,
-            status: e.status,
-            issue_type: e.issue_type || 'epic',
-            created_at: e.created_at,
-            updated_at: e.updated_at,
-            closed_at: e.closed_at ?? null,
-            deleted_at: e.deleted_at ?? null,
-            // Preserve useful counters from bd output
-            total_children: /** @type {any} */ (it).total_children,
-            closed_children: /** @type {any} */ (it).closed_children,
-            eligible_for_close: /** @type {any} */ (it).eligible_for_close
-          };
-          return flat;
-        }
-        return it;
-      });
-      raw = raw.filter((it) => {
-        if (!it || typeof it !== 'object') {
-          return false;
-        }
-        const status =
-          typeof (/** @type {any} */ (it).status) === 'string'
-            ? /** @type {any} */ (it).status
-            : '';
-        if (status === 'tombstone') {
-          return false;
-        }
-        const deleted_at = /** @type {any} */ (it).deleted_at;
-        if (deleted_at !== undefined && deleted_at !== null) {
-          return false;
-        }
-        return true;
+  const promise = run();
+  _inflight.set(cache_key, promise);
+  try {
+    const result = await promise;
+    if (result.ok) {
+      _cache.set(cache_key, {
+        expires: Date.now() + CACHE_TTL_MS,
+        value: result
       });
     }
-
-    const items = normalizeIssueList(raw);
-    return { ok: true, items };
-  } catch (err) {
-    log('bd invocation failed for %o (args=%o): %o', spec, args, err);
-    return {
-      ok: false,
-      error: {
-        code: 'bd_error',
-        message:
-          (err && /** @type {any} */ (err).message) || 'bd invocation failed'
-      }
-    };
+    return result;
+  } finally {
+    _inflight.delete(cache_key);
   }
 }
 
